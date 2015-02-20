@@ -13,9 +13,10 @@ assert(CONFIGURATION.server, "which server?")
 assert(CONFIGURATION.password, "password?")
 if CONFIGURATION.server_port then
 	SERVER_PORT = assert(tonumber(CONFIGURATION.server_port))
-else
-	SERVER_PORT = 8388
-end
+else SERVER_PORT = 8388 end
+if CONFIGURATION.local_port then
+	CONFIGURATION.local_port = assert(tonumber(CONFIGURATION.local_port))
+else CONFIGURATION.local_port = 1080 end
 CONFIGURATION.method = CONFIGURATION.method or "aes-256-cfb"
 
 if not jit then
@@ -23,12 +24,13 @@ if not jit then
 end
 
 ffi, crypto = require "ffi", require "crypto"
-uv = require "xuv"
+uv = require "xuv" -- github.com/imzyxwvu/lua-xuv
+HTTP = require "HTTP"
 
 local schar, band = string.char, (bit or bit32).band
 
 function log(format, ...)
-	print(os.date(" * ") .. string.format(format, ...))
+	print(os.date("[ %m-%d %H:%M:%S ] ") .. string.format(format, ...))
 end
 
 if jit and jit.os == "Linux" then
@@ -73,14 +75,16 @@ function Shadowsocks.OpenSSL(wtf, method, key, iv)
 	return wtf.new(method, key, iv)
 end
 
-function Shadowsocks.rc4_md5(wtf, _, key, _iv)
+function Shadowsocks.rc4_md5(wtf, _, key, iv)
 	local md5 = crypto.digest.new "md5"
 	md5:update(key)
 	md5:update(iv)
 	return wtf.new("rc4", md5:final(nil, true), "")
 end
 
+Shadowsocks.Ciphers["rc4-md5"] = { 16, 16, Shadowsocks.rc4_md5 }
 Shadowsocks.Ciphers["aes-256-cfb"] = { 32, 16, Shadowsocks.OpenSSL }
+Shadowsocks.Ciphers["aes-256-ofb"] = { 32, 16, Shadowsocks.OpenSSL }
 
 function Shadowsocks.Wrap(method, password)
 	local cipher = assert(Shadowsocks.Ciphers[method], "no such method")
@@ -154,7 +158,7 @@ function service(self, request, rest)
 		end
 		remote = Shadowsocks.GetAgent(remote)
 		if not remote:write(first_kiss) then self:close() return end
-		log("connect to %s", request.host or request.address)
+		log("connected to %s:%d", request.host or request.address, request.r_port)
 		function remote.on_close() self:close() end
 		function self.on_close() remote:close() end
 		function remote.on_data(chunk)
@@ -175,10 +179,76 @@ function service(self, request, rest)
 end
 
 --------------------------------------------------------------------------------
+------------------------------    HTTP  Service   ------------------------------
+--------------------------------------------------------------------------------
+
+function connect_service(res, host, port)
+	uv.connect(CONFIGURATION.server, SERVER_PORT, function(...)
+		HTTP.SafeResume(res.thread, ...)
+	end)
+	local remote, err = coroutine.yield()
+	if err then
+		return res:DisplayError(502, "<html><h1>Bad Gateway</h1></html>")
+	end
+	remote = Shadowsocks.GetAgent(remote) -- add the shadowsocks layer on it.
+	if not remote then -- this always means the upgrade operation failed.
+		return res:DisplayError(502, "<html><h1>Bad Gateway</h1></html>")
+	end
+	res:WriteHeader(200, {})
+	-- downgrade the stream, so the ZyWebD engine won't do anything with it more.
+	res.disabled = true
+	res.reader:Push(nil, "downgraded")
+	-- bind the close event together
+	function remote.on_close() res.stream:close() end
+	function res.stream.on_close() remote:close() end
+	-- now prepare do the first kiss with c... the shadowsocks server
+	local first_kiss = schar(3, #host) .. host
+	first_kiss = first_kiss .. schar(band(port, 0xFF00) / 0x100, band(port, 0xFF))
+	if res.reader.buffer then -- if there is something not flushed
+		first_kiss = first_kiss .. res.reader.buffer
+		res.reader.buffer = nil
+	end
+	if not remote:write(first_kiss) then return end
+	-- sha has been my tsukaima, connection established!
+	log("connected to %s:%d", host, port)
+	function remote.on_data(chunk)
+		remote:read_stop()
+		if res.stream() then -- check if it's alive...
+			res.stream:write(chunk, function()
+				if remote:alive() then remote:read_start() end
+			end)
+		end
+	end
+	function res.stream.on_data(chunk)
+		res.stream:read_stop()
+		if remote:alive() then remote:write(chunk, function()
+			if res.stream() then res.stream:read_start() end
+		end) end
+	end
+	remote:read_start()
+end
+
+function web_service(req, res)
+	log("%s %s %s", req.peername, req.method, req.resource_orig)
+	if req.method == "CONNECT" then
+		local host, port = req.resource_orig:match "^([A-Za-z0-9%-%.]+):(%d+)$"
+		port = tonumber(port)
+		if host and port then
+			res.reader = req.reader -- so I can pass only one object.
+			return connect_service(res, host, port)
+		else
+			res:DisplayError(400, "<html><h1>Bad Request</h1></html>")
+		end
+	else
+		res:DisplayError(503, "<html><h1>Under Construction</h1></html>")
+	end
+end
+
+--------------------------------------------------------------------------------
 ------------------------------   SOCKS5 Service   ------------------------------
 --------------------------------------------------------------------------------
 
-uv.listen("0.0.0.0", 1080, 128, function(self)
+uv.listen("0.0.0.0", CONFIGURATION.local_port, 128, function(self)
 	self:nodelay(true)
 	local buffer, nstage, state = "", 1, { stream = self, socks5 = true }
 	local function handshake()
@@ -191,11 +261,10 @@ uv.listen("0.0.0.0", 1080, 128, function(self)
 				elseif a == 4 and b == 1 then
 					return self:close() -- do not provide socks4
 				else
-					-- self:read_stop()
-					-- HTTP.HandleStream(self, buffer, web_service)
-					-- buffer = nil
-					-- return
-					return self:close()
+					self:read_stop()
+					HTTP.HandleStream(self, buffer, web_service)
+					buffer = nil
+					return
 				end
 				buffer = buffer:sub(3, -1)
 			end
