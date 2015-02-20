@@ -19,11 +19,7 @@ if CONFIGURATION.local_port then
 else CONFIGURATION.local_port = 1080 end
 CONFIGURATION.method = CONFIGURATION.method or "aes-256-cfb"
 
-if not jit then
-	error "run this program with luajit, okay?"
-end
-
-ffi, crypto = require "ffi", require "crypto"
+crypto = require "crypto" -- load luacrypto (openssl)
 uv = require "xuv" -- github.com/imzyxwvu/lua-xuv
 HTTP = require "HTTP"
 
@@ -51,11 +47,11 @@ function Shadowsocks.RandomString(length)
 	return schar(unpack(buffer))
 end
 
-if jit.os == "Linux" then
-	RPi_HWRng = io.open("/dev/hwrng", "rb")
-	if RPi_HWRng then
+if CONFIGURATION.random_source then
+	local filerng = io.open(CONFIGURATION.random_source, "rb")
+	if filerng then
 		function Shadowsocks.RandomString(length)
-			return RPi_HWRng:read(length)
+			return filerng:read(length)
 		end
 	end
 end
