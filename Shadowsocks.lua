@@ -3,7 +3,20 @@
 --  by zyxwvu <imzyxwvu@icloud.com>
 --
 
-cjson = require "cjson"
+do -- read JSON configuration
+	local fp = assert(io.open(arg[1] or "local.json", "rb"))
+	CONFIGURATION = fp:read"*a"
+end
+
+CONFIGURATION = (require "cjson").decode(CONFIGURATION)
+assert(CONFIGURATION.server, "which server?")
+assert(CONFIGURATION.password, "password?")
+if CONFIGURATION.server_port then
+	SERVER_PORT = assert(tonumber(CONFIGURATION.server_port))
+else
+	SERVER_PORT = 8388
+end
+CONFIGURATION.method = CONFIGURATION.method or "aes-256-cfb"
 
 if not jit then
 	error "run this program with luajit, okay?"
@@ -110,7 +123,7 @@ function Shadowsocks.Wrap(method, password)
 	end
 end
 
-Shadowsocks.GetAgent = Shadowsocks.Wrap("aes-256-cfb", "clowclow")
+Shadowsocks.GetAgent = Shadowsocks.Wrap(CONFIGURATION.method, CONFIGURATION.password)
 
 function service(self, request, rest)
 	local first_kiss
@@ -127,7 +140,7 @@ function service(self, request, rest)
 		first_kiss = first_kiss .. schar(band(port, 0xFF00) / 0x100, band(port, 0xFF))
 	end
 	if rest then first_kiss = first_kiss .. rest end
-	uv.connect("127.0.0.1", 8388, function(remote, err)
+	uv.connect(CONFIGURATION.server, SERVER_PORT, function(remote, err)
 		if err then
 			log("failed to connect to the Shadowsocks agent")
 			request.fail()
