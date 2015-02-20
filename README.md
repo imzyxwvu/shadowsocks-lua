@@ -12,7 +12,7 @@ I will implement these functions one-by-one:
 
 1. iptables-based transparent proxy on Linux
 2. dynamic proxying without PAC files
-3. HTTP CONNECT proxy and a web UI to control it
+3. Add a web UI to manage it
 4. Shadowsocks server with Web UI authentication
 5. Easy-to-deploy scripts
 
