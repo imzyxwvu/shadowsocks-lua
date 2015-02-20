@@ -18,7 +18,7 @@ I will implement these functions one-by-one:
 
 # Benchmarking
 
-I wrote a server that prints how much client it has accepted after 10 seconds and sends 20000 SOCKS5 connect request to the server. The Shadowsocks server is the official python server.py. Here are the results:
+I wrote a server that prints how many client it has accepted after 10 seconds and sends 20000 SOCKS5 connect request to the Shadowsocks client. The Shadowsocks server is the official python server.py. Here are the results:
 
 ## This implement
 
